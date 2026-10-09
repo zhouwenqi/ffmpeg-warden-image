@@ -88,7 +88,7 @@ jobs:
             --extra-ldflags="-L/tmp/deps/lib -L/tmp/deps/lib64 -static" \
             --enable-static \
             --disable-shared \
-            --small \
+            --optimize-for-size \
             --disable-everything \
             --disable-network \
             --disable-autodetect \
