@@ -1,0 +1,113 @@
+name: Build Custom Mini FFmpeg for Windows
+
+on:
+  workflow_dispatch: # 支持在 GitHub 页面手动点击触发编译
+
+jobs:
+  build-mingw:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      # 1. 安装 Windows 交叉编译链工具 (MinGW-w64)
+      - name: Install Cross-Compiler & Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            mingw-w64 \
+            build-essential \
+            nasm \
+            yasm \
+            cmake \
+            meson \
+            ninja-build \
+            pkg-config \
+            git
+
+      # 2. 编译并安装 libwebp (WebP 动图支持)
+      - name: Build libwebp
+        run: |
+          git clone --depth 1 https://chromium.googlesource.com/webm/libwebp
+          cd libwebp
+          mkdir build && cd build
+          cmake .. \
+            -DCMAKE_SYSTEM_NAME=Windows \
+            -DCMAKE_C_COMPILER=x86_64-w64-mingw32-gcc \
+            -DCMAKE_CXX_COMPILER=x86_64-w64-mingw32-g++ \
+            -DCMAKE_INSTALL_PREFIX=/tmp/deps \
+            -DBUILD_SHARED_LIBS=OFF \
+            -DWEBP_BUILD_ANIM_UTILS=OFF \
+            -DWEBP_BUILD_CWEBP=OFF \
+            -DWEBP_BUILD_DWEBP=OFF \
+            -DWEBP_BUILD_GIF2WEBP=OFF \
+            -DWEBP_BUILD_IMG2WEBP=OFF \
+            -DWEBP_BUILD_VWEBP=OFF \
+            -DWEBP_BUILD_WEBPINFO=OFF \
+            -DWEBP_BUILD_WEBPMUX=ON
+          make -j$(nproc)
+          make install
+
+      # 3. 编译并安装 libaom (AV1 / AVIF 极速编解码支持)
+      - name: Build libaom (AVIF)
+        run: |
+          git clone --depth 1 https://aomedia.googlesource.com/aom
+          cd aom
+          mkdir aom_build && cd aom_build
+          cmake .. \
+            -DCMAKE_SYSTEM_NAME=Windows \
+            -DCMAKE_C_COMPILER=x86_64-w64-mingw32-gcc \
+            -DCMAKE_CXX_COMPILER=x86_64-w64-mingw32-g++ \
+            -DCMAKE_INSTALL_PREFIX=/tmp/deps \
+            -A x64 \
+            -DENABLE_DOCS=OFF \
+            -DENABLE_EXAMPLES=OFF \
+            -DENABLE_TESTS=OFF \
+            -DENABLE_TOOLS=OFF \
+            -DCONFIG_AV1_ENCODER=1 \
+            -DCONFIG_AV1_DECODER=1
+          make -j$(nproc)
+          make install
+
+      # 4. 下载 FFmpeg 源码并执行“极简配置”编译
+      - name: Build Custom FFmpeg
+        run: |
+          git clone --depth 1 https://git.ffmpeg.org/ffmpeg.git ffmpeg
+          cd ffmpeg
+
+          # 配置环境变量让 pkg-config 能找到刚刚编译的静态库
+          export PKG_CONFIG_PATH=/tmp/deps/lib/pkgconfig:$PKG_CONFIG_PATH
+
+          # 关键的瘦身 ./configure 参数配置
+          ./configure \
+            --arch=x86_64 \
+            --target-os=mingw32 \
+            --cross-prefix=x86_64-w64-mingw32- \
+            --pkg-config=pkg-config \
+            --extra-cflags="-I/tmp/deps/include" \
+            --extra-ldflags="-L/tmp/deps/lib -static" \
+            --enable-static \
+            --disable-shared \
+            --small \
+            --disable-everything \
+            --disable-network \
+            --disable-autodetect \
+            --enable-protocol=file \
+            --enable-demuxer=gif,image2,webp,mov,apng \
+            --enable-decoder=gif,webp,av1,png,mjpeg,bmp,tiff \
+            --enable-encoder=gif,libwebp,libaom_av1,png,mjpeg,bmp \
+            --enable-parser=png,webp,av1,mjpeg \
+            --enable-filter=scale,palettegen,paletteuse,fps,split \
+            --enable-libwebp \
+            --enable-libaom
+
+          make -j$(nproc)
+          # 剥离 C++ 调试符号信息（进一步瘦身 30%+）
+          x86_64-w64-mingw32-strip ffmpeg.exe
+
+      # 5. 打包并发布为 Github ReleaseArtifact
+      - name: Upload FFmpeg Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ffmpeg-mini-win64
+          path: ffmpeg/ffmpeg.exe
